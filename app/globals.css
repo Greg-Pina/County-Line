@@ -1,0 +1,44 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: #0b1020;
+  color: #eef2ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.page {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.topbar {
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid #1f2a44;
+  background: #101a33;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.topbar p {
+  margin: 0.4rem 0 0;
+  color: #b3bfd9;
+  font-size: 0.9rem;
+}
+
+.mapWrap {
+  min-height: 0;
+}
+
+.mapContainer {
+  width: 100%;
+  height: calc(100vh - 78px);
+}

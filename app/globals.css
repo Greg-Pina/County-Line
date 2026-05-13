@@ -38,7 +38,153 @@ body {
   min-height: 0;
 }
 
-.mapContainer {
+.mapStage {
+  position: relative;
   width: 100%;
   height: calc(100vh - 78px);
+  min-height: 420px;
+  overflow: hidden;
+}
+
+.mapContainer {
+  width: 100%;
+  height: 100%;
+}
+
+.layerPanel {
+  position: absolute;
+  left: 1rem;
+  top: 1rem;
+  z-index: 1;
+  width: min(18rem, calc(100% - 2rem));
+  padding: 0.85rem;
+  border: 1px solid rgba(226, 232, 240, 0.18);
+  border-radius: 8px;
+  background: rgba(9, 14, 28, 0.86);
+  box-shadow: 0 14px 32px rgba(5, 8, 18, 0.32);
+  backdrop-filter: blur(12px);
+}
+
+.layerPanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  color: #dbeafe;
+}
+
+.activeGeography {
+  min-width: 0;
+  overflow: hidden;
+  color: #bae6fd;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: none;
+}
+
+.layerToggle {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas: "switch label";
+  align-items: center;
+  gap: 0.65rem;
+  min-height: 2.25rem;
+  color: #f8fafc;
+  font-size: 0.92rem;
+  font-weight: 650;
+  cursor: pointer;
+  user-select: none;
+}
+
+.layerToggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toggleTrack {
+  grid-area: switch;
+  position: relative;
+  width: 2.5rem;
+  height: 1.35rem;
+  border: 1px solid rgba(148, 163, 184, 0.6);
+  border-radius: 999px;
+  background: #334155;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.toggleThumb {
+  position: absolute;
+  left: 0.18rem;
+  top: 50%;
+  width: 0.92rem;
+  height: 0.92rem;
+  border-radius: 50%;
+  background: #e2e8f0;
+  transform: translateY(-50%);
+  transition: transform 160ms ease, background 160ms ease;
+}
+
+.layerToggle input:checked + .toggleTrack {
+  border-color: #67e8f9;
+  background: #0891b2;
+}
+
+.layerToggle input:checked + .toggleTrack .toggleThumb {
+  background: #f8fafc;
+  transform: translate(1.1rem, -50%);
+}
+
+.layerToggle input:focus-visible + .toggleTrack {
+  outline: 2px solid #facc15;
+  outline-offset: 3px;
+}
+
+.mapStage .maplibregl-popup-content {
+  border: 1px solid rgba(226, 232, 240, 0.18);
+  border-radius: 8px;
+  background: rgba(9, 14, 28, 0.94) !important;
+  color: #f8fafc !important;
+  font: 700 0.85rem Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+.mapStage .maplibregl-popup-anchor-bottom .maplibregl-popup-tip {
+  border-top-color: rgba(9, 14, 28, 0.94) !important;
+}
+
+.mapStage .maplibregl-popup-anchor-top .maplibregl-popup-tip {
+  border-bottom-color: rgba(9, 14, 28, 0.94) !important;
+}
+
+.mapStage .maplibregl-popup-anchor-left .maplibregl-popup-tip {
+  border-right-color: rgba(9, 14, 28, 0.94) !important;
+}
+
+.mapStage .maplibregl-popup-anchor-right .maplibregl-popup-tip {
+  border-left-color: rgba(9, 14, 28, 0.94) !important;
+}
+
+@media (max-width: 640px) {
+  .topbar {
+    padding: 0.85rem 1rem;
+  }
+
+  .mapStage {
+    height: calc(100vh - 86px);
+    min-height: 520px;
+  }
+
+  .layerPanel {
+    left: 0.75rem;
+    top: 0.75rem;
+    width: min(17rem, calc(100% - 1.5rem));
+  }
 }

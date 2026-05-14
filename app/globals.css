@@ -163,6 +163,16 @@ body {
   background: #0891b2;
 }
 
+.layerToggle input:checked + .toggleTrackUpper {
+  border-color: #6ee7b7;
+  background: #059669;
+}
+
+.layerToggle input:checked + .toggleTrackLower {
+  border-color: #fda4af;
+  background: #be123c;
+}
+
 .layerToggle input:checked + .toggleTrack .toggleThumb {
   background: #f8fafc;
   transform: translate(1.1rem, -50%);

@@ -1,10 +1,30 @@
 'use client';
 
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import maplibregl from 'maplibre-gl';
-import type { MapGeoJSONFeature, MapLayerMouseEvent, StyleSpecification } from 'maplibre-gl';
+import type {
+  LngLatLike,
+  MapGeoJSONFeature,
+  MapLayerMouseEvent,
+  MapMouseEvent,
+  StyleSpecification
+} from 'maplibre-gl';
 import type { FeatureCollection } from 'geojson';
+import {
+  CONGRESSIONAL_DISTRICTS_QUERY_URL,
+  STATE_LEGISLATIVE_LOWER_QUERY_URL,
+  STATE_LEGISLATIVE_UPPER_QUERY_URL,
+  getDistrictKindLabel,
+  getReadableDistrictName,
+  getStateFips,
+  getStateNameFromFips,
+  lookupDistrictsForSearchResult,
+  searchGeographies,
+  type DistrictLookupKind,
+  type DistrictLookupResult,
+  type GeographySearchResult
+} from '../lib/geography';
 
 const MAP_STYLE: StyleSpecification = {
   version: 8,
@@ -40,8 +60,6 @@ const STATE_LEGISLATIVE_UPPER_LAYER_IDS = [
   STATE_LEGISLATIVE_UPPER_LINE_LAYER_ID,
   STATE_LEGISLATIVE_UPPER_LABEL_LAYER_ID
 ];
-const STATE_LEGISLATIVE_UPPER_QUERY_URL =
-  'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_ACS2025/MapServer/56/query';
 const STATE_LEGISLATIVE_LOWER_SOURCE_ID = 'state-legislative-lower';
 const STATE_LEGISLATIVE_LOWER_FILL_LAYER_ID = 'state-legislative-lower-fill';
 const STATE_LEGISLATIVE_LOWER_LINE_LAYER_ID = 'state-legislative-lower-line';
@@ -51,8 +69,6 @@ const STATE_LEGISLATIVE_LOWER_LAYER_IDS = [
   STATE_LEGISLATIVE_LOWER_LINE_LAYER_ID,
   STATE_LEGISLATIVE_LOWER_LABEL_LAYER_ID
 ];
-const STATE_LEGISLATIVE_LOWER_QUERY_URL =
-  'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_ACS2025/MapServer/58/query';
 const CONGRESSIONAL_DISTRICTS_SOURCE_ID = 'congressional-districts';
 const CONGRESSIONAL_DISTRICTS_FILL_LAYER_ID = 'congressional-districts-fill';
 const CONGRESSIONAL_DISTRICTS_LINE_LAYER_ID = 'congressional-districts-line';
@@ -62,108 +78,145 @@ const CONGRESSIONAL_DISTRICTS_LAYER_IDS = [
   CONGRESSIONAL_DISTRICTS_LINE_LAYER_ID,
   CONGRESSIONAL_DISTRICTS_LABEL_LAYER_ID
 ];
-const CONGRESSIONAL_DISTRICTS_QUERY_URL =
-  'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_ACS2025/MapServer/54/query';
+const SEARCH_MARKER_SOURCE_ID = 'place-search-marker';
+const SEARCH_MARKER_LAYER_ID = 'place-search-marker-circle';
 const EMPTY_FEATURE_COLLECTION: FeatureCollection = {
   type: 'FeatureCollection',
   features: []
 };
-const STATE_NAME_TO_FIPS = new Map([
-  ['Alabama', '01'],
-  ['Alaska', '02'],
-  ['Arizona', '04'],
-  ['Arkansas', '05'],
-  ['California', '06'],
-  ['Colorado', '08'],
-  ['Connecticut', '09'],
-  ['Delaware', '10'],
-  ['District of Columbia', '11'],
-  ['Florida', '12'],
-  ['Georgia', '13'],
-  ['Hawaii', '15'],
-  ['Idaho', '16'],
-  ['Illinois', '17'],
-  ['Indiana', '18'],
-  ['Iowa', '19'],
-  ['Kansas', '20'],
-  ['Kentucky', '21'],
-  ['Louisiana', '22'],
-  ['Maine', '23'],
-  ['Maryland', '24'],
-  ['Massachusetts', '25'],
-  ['Michigan', '26'],
-  ['Minnesota', '27'],
-  ['Mississippi', '28'],
-  ['Missouri', '29'],
-  ['Montana', '30'],
-  ['Nebraska', '31'],
-  ['Nevada', '32'],
-  ['New Hampshire', '33'],
-  ['New Jersey', '34'],
-  ['New Mexico', '35'],
-  ['New York', '36'],
-  ['North Carolina', '37'],
-  ['North Dakota', '38'],
-  ['Ohio', '39'],
-  ['Oklahoma', '40'],
-  ['Oregon', '41'],
-  ['Pennsylvania', '42'],
-  ['Rhode Island', '44'],
-  ['South Carolina', '45'],
-  ['South Dakota', '46'],
-  ['Tennessee', '47'],
-  ['Texas', '48'],
-  ['Utah', '49'],
-  ['Vermont', '50'],
-  ['Virginia', '51'],
-  ['Washington', '53'],
-  ['West Virginia', '54'],
-  ['Wisconsin', '55'],
-  ['Wyoming', '56']
-]);
 
 function getStateName(feature: MapGeoJSONFeature) {
-  return typeof feature.properties?.name === 'string' ? feature.properties.name : 'Selected state';
+  if (typeof feature.properties?.name === 'string') {
+    return feature.properties.name;
+  }
+
+  if (typeof feature.properties?.NAME === 'string') {
+    return feature.properties.NAME;
+  }
+
+  return 'Selected state';
 }
 
-function getStateFips(stateName: string) {
-  return STATE_NAME_TO_FIPS.get(stateName) ?? null;
+type DistrictChoice = DistrictLookupResult & {
+  sourceId: string | null;
+  popupText: string;
+};
+
+type SearchStatus = 'idle' | 'searching' | 'loading-districts' | 'error';
+
+const SELECTABLE_FILL_LAYER_IDS = [
+  STATE_LEGISLATIVE_LOWER_FILL_LAYER_ID,
+  STATE_LEGISLATIVE_UPPER_FILL_LAYER_ID,
+  CONGRESSIONAL_DISTRICTS_FILL_LAYER_ID,
+  US_STATES_FILL_LAYER_ID
+];
+
+function getDistrictSourceId(kind: DistrictLookupKind) {
+  switch (kind) {
+    case 'state':
+      return US_STATES_SOURCE_ID;
+    case 'congressional':
+      return CONGRESSIONAL_DISTRICTS_SOURCE_ID;
+    case 'state-upper':
+      return STATE_LEGISLATIVE_UPPER_SOURCE_ID;
+    case 'state-lower':
+      return STATE_LEGISLATIVE_LOWER_SOURCE_ID;
+  }
 }
 
-function getCongressionalDistrictName(feature: MapGeoJSONFeature) {
-  const basename = feature.properties?.BASENAME;
-  const name = feature.properties?.NAME;
+function districtChoiceFromLookupResult(result: DistrictLookupResult): DistrictChoice {
+  return {
+    ...result,
+    sourceId: getDistrictSourceId(result.kind),
+    popupText: `${result.subtitle}: ${result.title}`
+  };
+}
 
-  if (typeof basename === 'string' && basename.length > 0) {
-    const districtNumber = Number(basename);
+function districtChoiceFromRenderedFeature(
+  feature: MapGeoJSONFeature,
+  selectedStateName: string | null
+): DistrictChoice | null {
+  const properties = feature.properties ?? {};
+  const sourceLayer = feature.layer.id;
+  let kind: DistrictLookupKind;
 
-    if (basename === '00' || basename.toLowerCase() === 'at large') {
-      return 'At-large district';
+  if (sourceLayer === US_STATES_FILL_LAYER_ID) {
+    kind = 'state';
+  } else if (sourceLayer === CONGRESSIONAL_DISTRICTS_FILL_LAYER_ID) {
+    kind = 'congressional';
+  } else if (sourceLayer === STATE_LEGISLATIVE_UPPER_FILL_LAYER_ID) {
+    kind = 'state-upper';
+  } else if (sourceLayer === STATE_LEGISLATIVE_LOWER_FILL_LAYER_ID) {
+    kind = 'state-lower';
+  } else {
+    return null;
+  }
+
+  const featureId =
+    feature.id ?? getStringFeatureProperty(feature, 'GEOID') ?? getStringFeatureProperty(feature, 'name');
+  const stateFips =
+    kind === 'state'
+      ? getStateFips(getStateName(feature))
+      : getStringFeatureProperty(feature, 'STATE');
+  const stateName =
+    kind === 'state'
+      ? getStateName(feature)
+      : getStateNameFromFips(stateFips) ?? selectedStateName;
+  const title =
+    kind === 'state'
+      ? stateName ?? 'Selected state'
+      : `${stateName ? `${stateName} ` : ''}${getReadableDistrictName(kind, properties)}`;
+  const subtitle = getDistrictKindLabel(kind);
+
+  if (featureId === null || title.length === 0) {
+    return null;
+  }
+
+  return {
+    id: `${kind}:${String(featureId)}`,
+    kind,
+    title,
+    subtitle,
+    stateFips,
+    stateName,
+    featureId,
+    properties,
+    sourceId: getDistrictSourceId(kind),
+    popupText: `${subtitle}: ${title}`
+  };
+}
+
+function dedupeDistrictChoices(choices: DistrictChoice[]) {
+  const seenChoices = new Set<string>();
+
+  return choices.filter((choice) => {
+    if (seenChoices.has(choice.id)) {
+      return false;
     }
 
-    return Number.isNaN(districtNumber) ? basename : `District ${districtNumber}`;
-  }
-
-  return typeof name === 'string' ? name : 'Congressional district';
+    seenChoices.add(choice.id);
+    return true;
+  });
 }
 
-function getLegislativeDistrictName(feature: MapGeoJSONFeature, chamber: 'upper' | 'lower') {
-  const name = feature.properties?.NAME;
-  const basename = feature.properties?.BASENAME;
-  const chamberName = chamber === 'upper' ? 'Upper' : 'Lower';
+function sortDistrictChoices(firstChoice: DistrictChoice, secondChoice: DistrictChoice) {
+  const kindOrder: DistrictLookupKind[] = ['state', 'congressional', 'state-upper', 'state-lower'];
+  const kindDifference = kindOrder.indexOf(firstChoice.kind) - kindOrder.indexOf(secondChoice.kind);
 
-  if (typeof name === 'string' && name.length > 0) {
-    return name;
+  if (kindDifference !== 0) {
+    return kindDifference;
   }
 
-  if (typeof basename === 'string' && basename.length > 0) {
-    const districtNumber = Number(basename);
-    const districtName = Number.isNaN(districtNumber) ? basename : `District ${districtNumber}`;
+  return firstChoice.title.localeCompare(secondChoice.title, undefined, {
+    numeric: true,
+    sensitivity: 'base'
+  });
+}
 
-    return `${chamberName} ${districtName}`;
-  }
+function getStringFeatureProperty(feature: MapGeoJSONFeature, propertyName: string) {
+  const value = feature.properties?.[propertyName];
 
-  return `${chamberName} legislative district`;
+  return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
 function getCongressionalDistrictsUrl(stateFips: string) {
@@ -251,6 +304,79 @@ function updateCongressionalDistrictSource(map: maplibregl.Map, stateFips: strin
   source.setData(stateFips ? getCongressionalDistrictsUrl(stateFips) : EMPTY_FEATURE_COLLECTION);
 }
 
+function updateSearchMarker(map: maplibregl.Map, searchResult: GeographySearchResult) {
+  const source = map.getSource(SEARCH_MARKER_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
+
+  if (!source) return;
+
+  source.setData({
+    type: 'FeatureCollection',
+    features: [
+      {
+        type: 'Feature',
+        geometry: {
+          type: 'Point',
+          coordinates: [searchResult.longitude, searchResult.latitude]
+        },
+        properties: {
+          label: searchResult.label
+        }
+      }
+    ]
+  });
+}
+
+function focusMapOnSearchResult(map: maplibregl.Map, searchResult: GeographySearchResult) {
+  const bounds = getGeometryBounds(searchResult.geometry);
+
+  if (bounds) {
+    map.fitBounds(bounds, {
+      padding: {
+        top: 48,
+        bottom: 48,
+        left: 360,
+        right: 48
+      },
+      maxZoom: searchResult.zoom,
+      duration: 700
+    });
+    return;
+  }
+
+  map.flyTo({
+    center: [searchResult.longitude, searchResult.latitude],
+    zoom: searchResult.zoom,
+    essential: true
+  });
+}
+
+function getGeometryBounds(geometry: GeographySearchResult['geometry']) {
+  if (!geometry || !('coordinates' in geometry)) {
+    return null;
+  }
+
+  const bounds = new maplibregl.LngLatBounds();
+
+  extendBounds(bounds, geometry.coordinates);
+
+  return bounds.isEmpty() ? null : bounds;
+}
+
+function extendBounds(bounds: maplibregl.LngLatBounds, coordinates: unknown) {
+  if (!Array.isArray(coordinates)) return;
+
+  if (
+    coordinates.length >= 2 &&
+    typeof coordinates[0] === 'number' &&
+    typeof coordinates[1] === 'number'
+  ) {
+    bounds.extend([coordinates[0], coordinates[1]]);
+    return;
+  }
+
+  coordinates.forEach((nextCoordinates) => extendBounds(bounds, nextCoordinates));
+}
+
 export default function MapShell() {
   const mapNodeRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -271,6 +397,221 @@ export default function MapShell() {
   const [activeStateName, setActiveStateName] = useState('United States');
   const [selectedStateName, setSelectedStateName] = useState<string | null>(null);
   const [selectedStateFips, setSelectedStateFips] = useState<string | null>(null);
+  const [searchInput, setSearchInput] = useState('');
+  const [searchResults, setSearchResults] = useState<GeographySearchResult[]>([]);
+  const [searchStatus, setSearchStatus] = useState<SearchStatus>('idle');
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [selectedSearchResultId, setSelectedSearchResultId] = useState<string | null>(null);
+  const [districtChoices, setDistrictChoices] = useState<DistrictChoice[]>([]);
+  const [selectedDistrictChoiceId, setSelectedDistrictChoiceId] = useState<string | null>(null);
+
+  const clearSelectedFeatureStates = useCallback((map: maplibregl.Map) => {
+    if (selectedStateRef.current !== null) {
+      map.setFeatureState(
+        { source: US_STATES_SOURCE_ID, id: selectedStateRef.current },
+        { selected: false }
+      );
+      selectedStateRef.current = null;
+    }
+
+    if (selectedStateUpperRef.current !== null) {
+      map.setFeatureState(
+        { source: STATE_LEGISLATIVE_UPPER_SOURCE_ID, id: selectedStateUpperRef.current },
+        { selected: false }
+      );
+      selectedStateUpperRef.current = null;
+    }
+
+    if (selectedStateLowerRef.current !== null) {
+      map.setFeatureState(
+        { source: STATE_LEGISLATIVE_LOWER_SOURCE_ID, id: selectedStateLowerRef.current },
+        { selected: false }
+      );
+      selectedStateLowerRef.current = null;
+    }
+
+    if (selectedCongressionalDistrictRef.current !== null) {
+      map.setFeatureState(
+        {
+          source: CONGRESSIONAL_DISTRICTS_SOURCE_ID,
+          id: selectedCongressionalDistrictRef.current
+        },
+        { selected: false }
+      );
+      selectedCongressionalDistrictRef.current = null;
+    }
+  }, []);
+
+  const selectDistrictChoice = useCallback(
+    (choice: DistrictChoice, lngLat?: LngLatLike) => {
+      const map = mapRef.current;
+
+      if (!map) return;
+
+      clearSelectedFeatureStates(map);
+      setSelectedDistrictChoiceId(choice.id);
+      setActiveStateName(choice.popupText);
+
+      if (choice.stateName) {
+        selectedStateNameRef.current = choice.stateName;
+        setSelectedStateName(choice.stateName);
+      }
+
+      if (choice.stateFips) {
+        setSelectedStateFips(choice.stateFips);
+      }
+
+      if (choice.kind === 'state') {
+        selectedStateNameRef.current = choice.title;
+        setSelectedStateName(choice.title);
+        setSelectedStateFips(getStateFips(choice.title));
+      }
+
+      if (choice.sourceId && choice.featureId !== null) {
+        try {
+          map.setFeatureState(
+            { source: choice.sourceId, id: choice.featureId },
+            { selected: true }
+          );
+        } catch {
+          // District sources may still be loading after a search result changes state.
+        }
+
+        if (choice.kind === 'state') {
+          selectedStateRef.current = choice.featureId;
+        } else if (choice.kind === 'congressional') {
+          selectedCongressionalDistrictRef.current = choice.featureId;
+        } else if (choice.kind === 'state-upper') {
+          selectedStateUpperRef.current = choice.featureId;
+        } else if (choice.kind === 'state-lower') {
+          selectedStateLowerRef.current = choice.featureId;
+        }
+      }
+
+      if (lngLat) {
+        popupRef.current?.remove();
+        popupRef.current = new maplibregl.Popup({ closeButton: false, offset: 12 })
+          .setLngLat(lngLat)
+          .setText(choice.popupText)
+          .addTo(map);
+      }
+    },
+    [clearSelectedFeatureStates]
+  );
+
+  async function handleSearchSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const trimmedSearch = searchInput.trim();
+
+    if (trimmedSearch.length === 0 || searchStatus === 'searching') {
+      return;
+    }
+
+    setSearchStatus('searching');
+    setSearchError(null);
+    setSearchResults([]);
+    setDistrictChoices([]);
+    setSelectedDistrictChoiceId(null);
+    setSelectedSearchResultId(null);
+
+    try {
+      const results = await searchGeographies(trimmedSearch);
+
+      setSearchResults(results);
+
+      if (results.length === 0) {
+        setSearchStatus('idle');
+        setSearchError('No matching city or ZIP found.');
+        return;
+      }
+
+      if (results.length === 1) {
+        await handleSearchResultSelect(results[0]);
+        return;
+      }
+
+      setActiveStateName(`${results.length} places found`);
+      setSearchStatus('idle');
+    } catch {
+      setSearchStatus('error');
+      setSearchError('Search failed. Try another city name or ZIP code.');
+    }
+  }
+
+  async function handleSearchResultSelect(searchResult: GeographySearchResult) {
+    const map = mapRef.current;
+
+    setSearchStatus('loading-districts');
+    setSearchError(null);
+    setSelectedSearchResultId(searchResult.id);
+    setSelectedDistrictChoiceId(null);
+    setDistrictChoices([]);
+    setStatesVisible(true);
+    setStateUpperVisible(true);
+    setStateLowerVisible(true);
+    setDistrictsVisible(true);
+
+    if (map) {
+      updateSearchMarker(map, searchResult);
+      focusMapOnSearchResult(map, searchResult);
+      popupRef.current?.remove();
+      popupRef.current = new maplibregl.Popup({ closeButton: false, offset: 12 })
+        .setLngLat([searchResult.longitude, searchResult.latitude])
+        .setText(searchResult.label)
+        .addTo(map);
+    }
+
+    try {
+      const lookupResults = await lookupDistrictsForSearchResult(searchResult);
+      const choices = lookupResults.map(districtChoiceFromLookupResult).sort(sortDistrictChoices);
+      const firstStateChoice = choices.find((choice) => choice.kind === 'state');
+      const nextStateName = firstStateChoice?.stateName ?? searchResult.stateName;
+      const nextStateFips = firstStateChoice?.stateFips ?? searchResult.stateFips;
+
+      if (nextStateName) {
+        selectedStateNameRef.current = nextStateName;
+        setSelectedStateName(nextStateName);
+      }
+
+      if (nextStateFips) {
+        setSelectedStateFips(nextStateFips);
+
+        if (map) {
+          updateStateLegislativeDistrictSource(
+            map,
+            STATE_LEGISLATIVE_UPPER_SOURCE_ID,
+            nextStateFips,
+            'upper'
+          );
+          updateStateLegislativeDistrictSource(
+            map,
+            STATE_LEGISLATIVE_LOWER_SOURCE_ID,
+            nextStateFips,
+            'lower'
+          );
+          updateCongressionalDistrictSource(map, nextStateFips);
+          setStateLayerVisibility(map, true);
+          setStateLegislativeLayerVisibility(map, STATE_LEGISLATIVE_UPPER_LAYER_IDS, true);
+          setStateLegislativeLayerVisibility(map, STATE_LEGISLATIVE_LOWER_LAYER_IDS, true);
+          setCongressionalDistrictLayerVisibility(map, true);
+        }
+      }
+
+      setDistrictChoices(choices);
+      setActiveStateName(
+        `${searchResult.label}: ${choices.length} district${choices.length === 1 ? '' : 's'}`
+      );
+      setSearchStatus('idle');
+
+      if (choices.length === 0) {
+        setSearchError('No districts found for that place.');
+      }
+    } catch {
+      setSearchStatus('error');
+      setSearchError('District lookup failed. Try selecting directly from the map.');
+    }
+  }
 
   useEffect(() => {
     if (!mapNodeRef.current) return;
@@ -301,16 +642,6 @@ export default function MapShell() {
       }
     };
 
-    const clearSelectedState = () => {
-      if (selectedStateRef.current !== null) {
-        map.setFeatureState(
-          { source: US_STATES_SOURCE_ID, id: selectedStateRef.current },
-          { selected: false }
-        );
-        selectedStateRef.current = null;
-      }
-    };
-
     const clearHoveredStateUpper = () => {
       if (hoveredStateUpperRef.current !== null) {
         map.setFeatureState(
@@ -318,16 +649,6 @@ export default function MapShell() {
           { hover: false }
         );
         hoveredStateUpperRef.current = null;
-      }
-    };
-
-    const clearSelectedStateUpper = () => {
-      if (selectedStateUpperRef.current !== null) {
-        map.setFeatureState(
-          { source: STATE_LEGISLATIVE_UPPER_SOURCE_ID, id: selectedStateUpperRef.current },
-          { selected: false }
-        );
-        selectedStateUpperRef.current = null;
       }
     };
 
@@ -341,16 +662,6 @@ export default function MapShell() {
       }
     };
 
-    const clearSelectedStateLower = () => {
-      if (selectedStateLowerRef.current !== null) {
-        map.setFeatureState(
-          { source: STATE_LEGISLATIVE_LOWER_SOURCE_ID, id: selectedStateLowerRef.current },
-          { selected: false }
-        );
-        selectedStateLowerRef.current = null;
-      }
-    };
-
     const clearHoveredCongressionalDistrict = () => {
       if (hoveredCongressionalDistrictRef.current !== null) {
         map.setFeatureState(
@@ -361,19 +672,6 @@ export default function MapShell() {
           { hover: false }
         );
         hoveredCongressionalDistrictRef.current = null;
-      }
-    };
-
-    const clearSelectedCongressionalDistrict = () => {
-      if (selectedCongressionalDistrictRef.current !== null) {
-        map.setFeatureState(
-          {
-            source: CONGRESSIONAL_DISTRICTS_SOURCE_ID,
-            id: selectedCongressionalDistrictRef.current
-          },
-          { selected: false }
-        );
-        selectedCongressionalDistrictRef.current = null;
       }
     };
 
@@ -399,38 +697,6 @@ export default function MapShell() {
       setActiveStateName(selectedStateNameRef.current ?? 'United States');
     };
 
-    const handleStateClick = (event: MapLayerMouseEvent) => {
-      const feature = event.features?.[0];
-
-      if (!feature) return;
-
-      const stateName = getStateName(feature);
-      const stateFips = getStateFips(stateName);
-      selectedStateNameRef.current = stateName;
-      setActiveStateName(stateName);
-      setSelectedStateName(stateName);
-      setSelectedStateFips(stateFips);
-
-      clearSelectedState();
-      clearHoveredStateUpper();
-      clearSelectedStateUpper();
-      clearHoveredStateLower();
-      clearSelectedStateLower();
-      clearHoveredCongressionalDistrict();
-      clearSelectedCongressionalDistrict();
-
-      if (feature.id !== undefined) {
-        selectedStateRef.current = feature.id;
-        map.setFeatureState({ source: US_STATES_SOURCE_ID, id: feature.id }, { selected: true });
-      }
-
-      popupRef.current?.remove();
-      popupRef.current = new maplibregl.Popup({ closeButton: false, offset: 12 })
-        .setLngLat(event.lngLat)
-        .setText(stateName)
-        .addTo(map);
-    };
-
     const handleStateUpperMove = (event: MapLayerMouseEvent) => {
       const feature = event.features?.[0];
 
@@ -448,7 +714,10 @@ export default function MapShell() {
       }
 
       setActiveStateName(
-        `${selectedStateNameRef.current ?? 'State'} ${getLegislativeDistrictName(feature, 'upper')}`
+        `State upper chamber: ${selectedStateNameRef.current ?? 'State'} ${getReadableDistrictName(
+          'state-upper',
+          feature.properties ?? {}
+        )}`
       );
     };
 
@@ -456,31 +725,6 @@ export default function MapShell() {
       map.getCanvas().style.cursor = '';
       clearHoveredStateUpper();
       setActiveStateName(selectedStateNameRef.current ?? 'United States');
-    };
-
-    const handleStateUpperClick = (event: MapLayerMouseEvent) => {
-      const feature = event.features?.[0];
-
-      if (!feature) return;
-
-      const districtName = getLegislativeDistrictName(feature, 'upper');
-      setActiveStateName(`${selectedStateNameRef.current ?? 'State'} ${districtName}`);
-
-      clearSelectedStateUpper();
-
-      if (feature.id !== undefined) {
-        selectedStateUpperRef.current = feature.id;
-        map.setFeatureState(
-          { source: STATE_LEGISLATIVE_UPPER_SOURCE_ID, id: feature.id },
-          { selected: true }
-        );
-      }
-
-      popupRef.current?.remove();
-      popupRef.current = new maplibregl.Popup({ closeButton: false, offset: 12 })
-        .setLngLat(event.lngLat)
-        .setText(districtName)
-        .addTo(map);
     };
 
     const handleStateLowerMove = (event: MapLayerMouseEvent) => {
@@ -500,7 +744,10 @@ export default function MapShell() {
       }
 
       setActiveStateName(
-        `${selectedStateNameRef.current ?? 'State'} ${getLegislativeDistrictName(feature, 'lower')}`
+        `State lower chamber: ${selectedStateNameRef.current ?? 'State'} ${getReadableDistrictName(
+          'state-lower',
+          feature.properties ?? {}
+        )}`
       );
     };
 
@@ -508,31 +755,6 @@ export default function MapShell() {
       map.getCanvas().style.cursor = '';
       clearHoveredStateLower();
       setActiveStateName(selectedStateNameRef.current ?? 'United States');
-    };
-
-    const handleStateLowerClick = (event: MapLayerMouseEvent) => {
-      const feature = event.features?.[0];
-
-      if (!feature) return;
-
-      const districtName = getLegislativeDistrictName(feature, 'lower');
-      setActiveStateName(`${selectedStateNameRef.current ?? 'State'} ${districtName}`);
-
-      clearSelectedStateLower();
-
-      if (feature.id !== undefined) {
-        selectedStateLowerRef.current = feature.id;
-        map.setFeatureState(
-          { source: STATE_LEGISLATIVE_LOWER_SOURCE_ID, id: feature.id },
-          { selected: true }
-        );
-      }
-
-      popupRef.current?.remove();
-      popupRef.current = new maplibregl.Popup({ closeButton: false, offset: 12 })
-        .setLngLat(event.lngLat)
-        .setText(districtName)
-        .addTo(map);
     };
 
     const handleCongressionalDistrictMove = (event: MapLayerMouseEvent) => {
@@ -555,7 +777,10 @@ export default function MapShell() {
       }
 
       setActiveStateName(
-        `${selectedStateNameRef.current ?? 'Congressional'} ${getCongressionalDistrictName(feature)}`
+        `Federal: ${selectedStateNameRef.current ?? 'Congressional'} ${getReadableDistrictName(
+          'congressional',
+          feature.properties ?? {}
+        )}`
       );
     };
 
@@ -565,28 +790,32 @@ export default function MapShell() {
       setActiveStateName(selectedStateNameRef.current ?? 'United States');
     };
 
-    const handleCongressionalDistrictClick = (event: MapLayerMouseEvent) => {
-      const feature = event.features?.[0];
+    const handleMapClick = (event: MapMouseEvent) => {
+      const selectableLayers = SELECTABLE_FILL_LAYER_IDS.filter((layerId) => map.getLayer(layerId));
+      const choices = dedupeDistrictChoices(
+        map
+          .queryRenderedFeatures(event.point, { layers: selectableLayers })
+          .map((feature) => districtChoiceFromRenderedFeature(feature, selectedStateNameRef.current))
+          .filter((choice): choice is DistrictChoice => choice !== null)
+      ).sort(sortDistrictChoices);
 
-      if (!feature) return;
-
-      const districtName = getCongressionalDistrictName(feature);
-      setActiveStateName(`${selectedStateNameRef.current ?? 'Congressional'} ${districtName}`);
-
-      clearSelectedCongressionalDistrict();
-
-      if (feature.id !== undefined) {
-        selectedCongressionalDistrictRef.current = feature.id;
-        map.setFeatureState(
-          { source: CONGRESSIONAL_DISTRICTS_SOURCE_ID, id: feature.id },
-          { selected: true }
-        );
+      if (choices.length === 0) {
+        return;
       }
 
+      setDistrictChoices(choices);
+
+      if (choices.length === 1) {
+        selectDistrictChoice(choices[0], event.lngLat);
+        return;
+      }
+
+      setSelectedDistrictChoiceId(null);
+      setActiveStateName('Choose a district layer');
       popupRef.current?.remove();
       popupRef.current = new maplibregl.Popup({ closeButton: false, offset: 12 })
         .setLngLat(event.lngLat)
-        .setText(districtName)
+        .setText('Choose which district layer to select')
         .addTo(map);
     };
 
@@ -615,6 +844,11 @@ export default function MapShell() {
         type: 'geojson',
         data: EMPTY_FEATURE_COLLECTION,
         promoteId: 'GEOID'
+      });
+
+      map.addSource(SEARCH_MARKER_SOURCE_ID, {
+        type: 'geojson',
+        data: EMPTY_FEATURE_COLLECTION
       });
 
       map.addLayer({
@@ -878,18 +1112,28 @@ export default function MapShell() {
         }
       });
 
+      map.addLayer({
+        id: SEARCH_MARKER_LAYER_ID,
+        type: 'circle',
+        source: SEARCH_MARKER_SOURCE_ID,
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 5, 9, 8],
+          'circle-color': '#f8fafc',
+          'circle-stroke-color': '#0f172a',
+          'circle-stroke-width': 2.5,
+          'circle-opacity': 0.96
+        }
+      });
+
       map.on('mousemove', US_STATES_FILL_LAYER_ID, handleStateMove);
       map.on('mouseleave', US_STATES_FILL_LAYER_ID, handleStateLeave);
-      map.on('click', US_STATES_FILL_LAYER_ID, handleStateClick);
       map.on('mousemove', STATE_LEGISLATIVE_UPPER_FILL_LAYER_ID, handleStateUpperMove);
       map.on('mouseleave', STATE_LEGISLATIVE_UPPER_FILL_LAYER_ID, handleStateUpperLeave);
-      map.on('click', STATE_LEGISLATIVE_UPPER_FILL_LAYER_ID, handleStateUpperClick);
       map.on('mousemove', STATE_LEGISLATIVE_LOWER_FILL_LAYER_ID, handleStateLowerMove);
       map.on('mouseleave', STATE_LEGISLATIVE_LOWER_FILL_LAYER_ID, handleStateLowerLeave);
-      map.on('click', STATE_LEGISLATIVE_LOWER_FILL_LAYER_ID, handleStateLowerClick);
       map.on('mousemove', CONGRESSIONAL_DISTRICTS_FILL_LAYER_ID, handleCongressionalDistrictMove);
       map.on('mouseleave', CONGRESSIONAL_DISTRICTS_FILL_LAYER_ID, handleCongressionalDistrictLeave);
-      map.on('click', CONGRESSIONAL_DISTRICTS_FILL_LAYER_ID, handleCongressionalDistrictClick);
+      map.on('click', handleMapClick);
     };
 
     map.on('load', addMapLayers);
@@ -901,17 +1145,14 @@ export default function MapShell() {
       if (map.getLayer(US_STATES_FILL_LAYER_ID)) {
         map.off('mousemove', US_STATES_FILL_LAYER_ID, handleStateMove);
         map.off('mouseleave', US_STATES_FILL_LAYER_ID, handleStateLeave);
-        map.off('click', US_STATES_FILL_LAYER_ID, handleStateClick);
       }
       if (map.getLayer(STATE_LEGISLATIVE_UPPER_FILL_LAYER_ID)) {
         map.off('mousemove', STATE_LEGISLATIVE_UPPER_FILL_LAYER_ID, handleStateUpperMove);
         map.off('mouseleave', STATE_LEGISLATIVE_UPPER_FILL_LAYER_ID, handleStateUpperLeave);
-        map.off('click', STATE_LEGISLATIVE_UPPER_FILL_LAYER_ID, handleStateUpperClick);
       }
       if (map.getLayer(STATE_LEGISLATIVE_LOWER_FILL_LAYER_ID)) {
         map.off('mousemove', STATE_LEGISLATIVE_LOWER_FILL_LAYER_ID, handleStateLowerMove);
         map.off('mouseleave', STATE_LEGISLATIVE_LOWER_FILL_LAYER_ID, handleStateLowerLeave);
-        map.off('click', STATE_LEGISLATIVE_LOWER_FILL_LAYER_ID, handleStateLowerClick);
       }
       if (map.getLayer(CONGRESSIONAL_DISTRICTS_FILL_LAYER_ID)) {
         map.off(
@@ -924,12 +1165,12 @@ export default function MapShell() {
           CONGRESSIONAL_DISTRICTS_FILL_LAYER_ID,
           handleCongressionalDistrictLeave
         );
-        map.off('click', CONGRESSIONAL_DISTRICTS_FILL_LAYER_ID, handleCongressionalDistrictClick);
       }
+      map.off('click', handleMapClick);
       map.remove();
       mapRef.current = null;
     };
-  }, []);
+  }, [selectDistrictChoice]);
 
   useEffect(() => {
     if (!mapRef.current) return;
@@ -990,6 +1231,48 @@ export default function MapShell() {
           <span>Layers</span>
           <span className="activeGeography">{activeStateName}</span>
         </div>
+        <form className="placeSearch" onSubmit={handleSearchSubmit}>
+          <label className="placeSearchLabel" htmlFor="place-search">
+            Search
+          </label>
+          <div className="placeSearchRow">
+            <input
+              id="place-search"
+              type="search"
+              value={searchInput}
+              onChange={(event) => setSearchInput(event.target.value)}
+              placeholder="City or ZIP code"
+              autoComplete="postal-code"
+            />
+            <button
+              type="submit"
+              disabled={searchStatus === 'searching' || searchStatus === 'loading-districts'}
+            >
+              {searchStatus === 'searching' ? 'Finding' : 'Find'}
+            </button>
+          </div>
+          {searchStatus === 'loading-districts' ? (
+            <span className="placeSearchStatus">Loading districts</span>
+          ) : null}
+          {searchError ? <span className="placeSearchError">{searchError}</span> : null}
+        </form>
+        {searchResults.length > 0 ? (
+          <div className="searchResultList" aria-label="Search results">
+            {searchResults.map((result) => (
+              <button
+                key={result.id}
+                type="button"
+                className={`searchResultButton${
+                  selectedSearchResultId === result.id ? ' isSelected' : ''
+                }`}
+                onClick={() => handleSearchResultSelect(result)}
+              >
+                <span>{result.label}</span>
+                <span>{result.typeLabel}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
         <label className="layerToggle">
           <input
             type="checkbox"
@@ -1047,6 +1330,28 @@ export default function MapShell() {
             </span>
           </span>
         </label>
+        {districtChoices.length > 0 ? (
+          <div className="districtChoiceList" aria-label="District choices">
+            <div className="districtChoiceHeader">
+              <span>Districts</span>
+              <span>{districtChoices.length}</span>
+            </div>
+            {districtChoices.map((choice) => (
+              <button
+                key={choice.id}
+                type="button"
+                className={`districtChoice districtChoice-${choice.kind}${
+                  selectedDistrictChoiceId === choice.id ? ' isSelected' : ''
+                }`}
+                aria-pressed={selectedDistrictChoiceId === choice.id}
+                onClick={() => selectDistrictChoice(choice)}
+              >
+                <span>{choice.subtitle}</span>
+                <span>{choice.title}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
       </aside>
     </div>
   );

@@ -1,0 +1,678 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum GeographyType {
+  COUNTRY
+  STATE
+  COUNTY
+  MUNICIPALITY
+  CONGRESSIONAL_DISTRICT
+  STATE_LEGISLATIVE_UPPER_DISTRICT
+  STATE_LEGISLATIVE_LOWER_DISTRICT
+  JUDICIAL_DISTRICT
+  PROSECUTORIAL_DISTRICT
+  SCHOOL_DISTRICT
+  ZIP_CODE
+  CENSUS_TRACT
+  OTHER
+}
+
+enum GeographyRelationshipType {
+  CONTAINS
+  WITHIN
+  OVERLAPS
+  SERVES
+  ADJACENT_TO
+  SUPERSEDES
+  OTHER
+}
+
+enum GovernmentLevel {
+  FEDERAL
+  STATE
+  COUNTY
+  MUNICIPAL
+  SPECIAL_DISTRICT
+  OTHER
+}
+
+enum OfficeFunction {
+  LEGISLATIVE
+  EXECUTIVE
+  JUDICIAL
+  PROSECUTORIAL
+  ADMINISTRATIVE
+  LAW_ENFORCEMENT
+  OTHER
+}
+
+enum LegislativeChamber {
+  LOWER
+  UPPER
+  UNICAMERAL
+  NONE
+}
+
+enum OrganizationType {
+  GOVERNMENT_AGENCY
+  COURT
+  PROSECUTOR_OFFICE
+  DONOR
+  PAC
+  SUPER_PAC
+  PARTY_COMMITTEE
+  CANDIDATE_COMMITTEE
+  NONPROFIT
+  CORPORATION
+  UNION
+  OTHER
+}
+
+enum DataSourceCategory {
+  CENSUS
+  ELECTIONS
+  CAMPAIGN_FINANCE
+  LEGISLATIVE
+  VOTING_RECORD
+  COURT
+  PROSECUTOR
+  PUBLIC_SAFETY
+  SOCIOECONOMIC
+  MANUAL
+  OTHER
+}
+
+enum ImportStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  PARTIAL
+}
+
+enum SourceEntityType {
+  PERSON
+  OFFICE
+  OFFICIAL_TENURE
+  GEOGRAPHY
+  ORGANIZATION
+  POLITICAL_PARTY
+  PARTY_AFFILIATION
+  MONEY_FLOW
+  LEGISLATIVE_MEASURE
+  VOTE_EVENT
+  OFFICIAL_VOTE
+  LEGAL_OUTCOME_AGGREGATE
+  METRIC_OBSERVATION
+  RELATIONSHIP_OBSERVATION
+}
+
+enum MoneyFlowType {
+  DIRECT_CONTRIBUTION
+  IN_KIND_CONTRIBUTION
+  TRANSFER
+  INDEPENDENT_EXPENDITURE
+  EARMARKED_CONTRIBUTION
+  REFUND
+  OTHER
+}
+
+enum SupportPosition {
+  SUPPORT
+  OPPOSE
+  NEUTRAL
+  UNKNOWN
+}
+
+enum VotePosition {
+  YEA
+  NAY
+  PRESENT
+  ABSTAIN
+  ABSENT
+  NOT_VOTING
+  OTHER
+}
+
+enum LegalInstitutionType {
+  JUDICIAL
+  PROSECUTORIAL
+}
+
+enum CaseCategory {
+  CIVIL
+  CRIMINAL
+  FAMILY
+  JUVENILE
+  TRAFFIC
+  ADMINISTRATIVE
+  OTHER
+}
+
+enum OffenseSeverity {
+  FELONY
+  MISDEMEANOR
+  INFRACTION
+  CIVIL
+  OTHER
+  UNKNOWN
+}
+
+enum MetricCategory {
+  INCARCERATION
+  RECIDIVISM
+  PUBLIC_SAFETY
+  SOCIOECONOMIC
+  DEMOGRAPHIC
+  ECONOMIC
+  EDUCATION
+  HEALTH
+  HOUSING
+  OTHER
+}
+
+enum InsightEntityType {
+  PERSON
+  OFFICE
+  ORGANIZATION
+  GEOGRAPHY
+  POLITICAL_PARTY
+  METRIC_DEFINITION
+  METRIC_OBSERVATION
+  LEGAL_OUTCOME_AGGREGATE
+  LEGISLATIVE_MEASURE
+  VOTE_EVENT
+  MONEY_FLOW
+}
+
+enum InsightRelationshipType {
+  HOLDS_OFFICE
+  AFFILIATED_WITH
+  DONATED_TO
+  FUNDED_BY
+  INDEPENDENTLY_SUPPORTED
+  INDEPENDENTLY_OPPOSED
+  VOTED_ON
+  RULED_ON
+  PROSECUTED_IN
+  SERVES_GEOGRAPHY
+  OVERLAPS_GEOGRAPHY
+  CORRELATED_WITH
+  ASSOCIATED_WITH
+  OTHER
+}
+
+model Geography {
+  id          String        @id @default(cuid())
+  type        GeographyType
+  name        String
+  slug        String?
+  geoid       String?
+  stateFips   String?
+  countyFips  String?
+  validFrom   DateTime?
+  validTo     DateTime?
+  geometryUrl String?
+  metadata    Json?
+  parentId    String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  parent                 Geography?              @relation("GeographyHierarchy", fields: [parentId], references: [id])
+  children               Geography[]             @relation("GeographyHierarchy")
+  offices                Office[]
+  organizations          Organization[]
+  sourceRelationships    GeographyRelationship[] @relation("GeographyRelationshipSource")
+  targetRelationships    GeographyRelationship[] @relation("GeographyRelationshipTarget")
+  partyAffiliations      PartyAffiliation[]
+  legalOutcomeAggregates LegalOutcomeAggregate[]
+  metricObservations     MetricObservation[]
+
+  @@unique([type, geoid, validFrom])
+  @@index([type, stateFips])
+  @@index([geoid])
+  @@index([parentId])
+}
+
+model GeographyRelationship {
+  id                String                    @id @default(cuid())
+  sourceGeographyId String
+  targetGeographyId String
+  type              GeographyRelationshipType
+  validFrom         DateTime?
+  validTo           DateTime?
+  confidence        Decimal?                  @db.Decimal(5, 4)
+  notes             String?
+  metadata          Json?
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+
+  sourceGeography Geography @relation("GeographyRelationshipSource", fields: [sourceGeographyId], references: [id], onDelete: Cascade)
+  targetGeography Geography @relation("GeographyRelationshipTarget", fields: [targetGeographyId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceGeographyId, targetGeographyId, type, validFrom])
+  @@index([sourceGeographyId, type])
+  @@index([targetGeographyId, type])
+}
+
+model PoliticalParty {
+  id           String   @id @default(cuid())
+  name         String
+  abbreviation String?
+  ideology     String?
+  colorHex     String?
+  metadata     Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  affiliations PartyAffiliation[]
+  tenures      OfficialTenure[]
+  votes        OfficialVote[]
+
+  @@unique([name])
+  @@index([abbreviation])
+}
+
+model Person {
+  id          String    @id @default(cuid())
+  displayName String
+  firstName   String?
+  middleName  String?
+  lastName    String?
+  suffix      String?
+  birthDate   DateTime?
+  externalIds Json?
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  partyAffiliations       PartyAffiliation[]
+  tenures                 OfficialTenure[]
+  votes                   OfficialVote[]
+  moneyFlowsAsDonor       PoliticalMoneyFlow[]    @relation("MoneyDonorPerson")
+  moneyFlowsAsRecipient   PoliticalMoneyFlow[]    @relation("MoneyRecipientPerson")
+  moneyFlowsAsBeneficiary PoliticalMoneyFlow[]    @relation("MoneyBeneficiaryPerson")
+  legalOutcomeAggregates  LegalOutcomeAggregate[]
+
+  @@index([lastName, firstName])
+  @@index([displayName])
+}
+
+model PartyAffiliation {
+  id          String    @id @default(cuid())
+  personId    String
+  partyId     String
+  geographyId String?
+  startDate   DateTime?
+  endDate     DateTime?
+  confidence  Decimal?  @db.Decimal(5, 4)
+  notes       String?
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  person    Person         @relation(fields: [personId], references: [id], onDelete: Cascade)
+  party     PoliticalParty @relation(fields: [partyId], references: [id])
+  geography Geography?     @relation(fields: [geographyId], references: [id])
+
+  @@index([personId, startDate, endDate])
+  @@index([partyId])
+  @@index([geographyId])
+}
+
+model Organization {
+  id          String           @id @default(cuid())
+  name        String
+  type        OrganizationType
+  geographyId String?
+  externalIds Json?
+  metadata    Json?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  geography              Geography?              @relation(fields: [geographyId], references: [id])
+  offices                Office[]
+  moneyFlowsAsDonor      PoliticalMoneyFlow[]    @relation("MoneyDonorOrganization")
+  moneyFlowsAsRecipient  PoliticalMoneyFlow[]    @relation("MoneyRecipientOrganization")
+  legalOutcomeAggregates LegalOutcomeAggregate[]
+
+  @@index([type])
+  @@index([geographyId])
+  @@index([name])
+}
+
+model Office {
+  id              String              @id @default(cuid())
+  name            String
+  normalizedTitle String?
+  level           GovernmentLevel
+  function        OfficeFunction
+  chamber         LegislativeChamber?
+  isElected       Boolean             @default(true)
+  isPartisan      Boolean             @default(false)
+  geographyId     String?
+  organizationId  String?
+  externalIds     Json?
+  metadata        Json?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  geography              Geography?              @relation(fields: [geographyId], references: [id])
+  organization           Organization?           @relation(fields: [organizationId], references: [id])
+  tenures                OfficialTenure[]
+  measures               LegislativeMeasure[]
+  voteEvents             VoteEvent[]
+  moneyFlows             PoliticalMoneyFlow[]
+  legalOutcomeAggregates LegalOutcomeAggregate[]
+  metricObservations     MetricObservation[]
+
+  @@index([level, function])
+  @@index([geographyId])
+  @@index([organizationId])
+}
+
+model OfficialTenure {
+  id           String    @id @default(cuid())
+  personId     String
+  officeId     String
+  partyId      String?
+  startDate    DateTime
+  endDate      DateTime?
+  termLabel    String?
+  electionDate DateTime?
+  isCurrent    Boolean   @default(false)
+  currentAsOf  DateTime?
+  notes        String?
+  metadata     Json?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  person Person          @relation(fields: [personId], references: [id], onDelete: Cascade)
+  office Office          @relation(fields: [officeId], references: [id], onDelete: Cascade)
+  party  PoliticalParty? @relation(fields: [partyId], references: [id])
+  votes  OfficialVote[]
+
+  @@index([isCurrent, currentAsOf])
+  @@index([personId, startDate, endDate])
+  @@index([officeId, startDate, endDate])
+  @@index([partyId])
+}
+
+model LegislativeMeasure {
+  id             String    @id @default(cuid())
+  officeId       String?
+  geographyId    String?
+  session        String?
+  externalId     String?
+  title          String
+  summary        String?
+  introducedAt   DateTime?
+  latestActionAt DateTime?
+  status         String?
+  policyAreas    Json?
+  metadata       Json?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  office     Office?     @relation(fields: [officeId], references: [id])
+  voteEvents VoteEvent[]
+
+  @@index([officeId, session])
+  @@index([externalId])
+  @@index([introducedAt])
+}
+
+model VoteEvent {
+  id         String   @id @default(cuid())
+  measureId  String
+  officeId   String?
+  occurredAt DateTime
+  question   String?
+  result     String?
+  yeaCount   Int?
+  nayCount   Int?
+  otherCount Int?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  measure LegislativeMeasure @relation(fields: [measureId], references: [id], onDelete: Cascade)
+  office  Office?            @relation(fields: [officeId], references: [id])
+  votes   OfficialVote[]
+
+  @@index([measureId])
+  @@index([officeId, occurredAt])
+}
+
+model OfficialVote {
+  id               String       @id @default(cuid())
+  voteEventId      String
+  personId         String
+  officialTenureId String?
+  partyId          String?
+  position         VotePosition
+  metadata         Json?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  voteEvent      VoteEvent       @relation(fields: [voteEventId], references: [id], onDelete: Cascade)
+  person         Person          @relation(fields: [personId], references: [id], onDelete: Cascade)
+  officialTenure OfficialTenure? @relation(fields: [officialTenureId], references: [id])
+  party          PoliticalParty? @relation(fields: [partyId], references: [id])
+
+  @@unique([voteEventId, personId])
+  @@index([personId])
+  @@index([officialTenureId])
+  @@index([partyId])
+}
+
+model PoliticalMoneyFlow {
+  id                      String           @id @default(cuid())
+  type                    MoneyFlowType
+  donorPersonId           String?
+  donorOrganizationId     String?
+  recipientPersonId       String?
+  recipientOrganizationId String?
+  beneficiaryPersonId     String?
+  officeId                String?
+  electionCycle           Int?
+  transactionDate         DateTime?
+  amount                  Decimal          @db.Decimal(18, 2)
+  currency                String           @default("USD")
+  supportPosition         SupportPosition?
+  sourceRecordId          String?
+  notes                   String?
+  metadata                Json?
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
+
+  donorPerson           Person?       @relation("MoneyDonorPerson", fields: [donorPersonId], references: [id])
+  donorOrganization     Organization? @relation("MoneyDonorOrganization", fields: [donorOrganizationId], references: [id])
+  recipientPerson       Person?       @relation("MoneyRecipientPerson", fields: [recipientPersonId], references: [id])
+  recipientOrganization Organization? @relation("MoneyRecipientOrganization", fields: [recipientOrganizationId], references: [id])
+  beneficiaryPerson     Person?       @relation("MoneyBeneficiaryPerson", fields: [beneficiaryPersonId], references: [id])
+  office                Office?       @relation(fields: [officeId], references: [id])
+
+  @@index([type, electionCycle])
+  @@index([donorPersonId])
+  @@index([donorOrganizationId])
+  @@index([recipientPersonId])
+  @@index([recipientOrganizationId])
+  @@index([beneficiaryPersonId])
+  @@index([officeId])
+  @@index([transactionDate])
+}
+
+model LegalOutcomeAggregate {
+  id                     String               @id @default(cuid())
+  institutionType        LegalInstitutionType
+  personId               String?
+  officeId               String?
+  organizationId         String?
+  geographyId            String?
+  periodStart            DateTime
+  periodEnd              DateTime
+  caseCategory           CaseCategory
+  offenseCategory        String?
+  offenseSeverity        OffenseSeverity?
+  disposition            String?
+  totalCases             Int
+  convictionCount        Int?
+  dismissalCount         Int?
+  pleaCount              Int?
+  acquittalCount         Int?
+  incarcerationCount     Int?
+  averageSentenceMonths  Decimal?             @db.Decimal(12, 4)
+  medianSentenceMonths   Decimal?             @db.Decimal(12, 4)
+  recidivismWindowMonths Int?
+  recidivismCount        Int?
+  metadata               Json?
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+
+  person       Person?       @relation(fields: [personId], references: [id])
+  office       Office?       @relation(fields: [officeId], references: [id])
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  geography    Geography?    @relation(fields: [geographyId], references: [id])
+
+  @@index([institutionType, periodStart, periodEnd])
+  @@index([personId])
+  @@index([officeId])
+  @@index([organizationId])
+  @@index([geographyId])
+  @@index([caseCategory, offenseSeverity])
+}
+
+model MetricDefinition {
+  id          String         @id @default(cuid())
+  key         String
+  name        String
+  category    MetricCategory
+  unit        String?
+  description String?
+  metadata    Json?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  observations MetricObservation[]
+
+  @@unique([key])
+  @@index([category])
+}
+
+model MetricObservation {
+  id          String   @id @default(cuid())
+  metricId    String
+  geographyId String?
+  officeId    String?
+  periodStart DateTime
+  periodEnd   DateTime
+  value       Decimal  @db.Decimal(20, 6)
+  denominator Decimal? @db.Decimal(20, 6)
+  dimensions  Json?
+  confidence  Decimal? @db.Decimal(5, 4)
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  metric    MetricDefinition @relation(fields: [metricId], references: [id], onDelete: Cascade)
+  geography Geography?       @relation(fields: [geographyId], references: [id])
+  office    Office?          @relation(fields: [officeId], references: [id])
+
+  @@index([metricId, periodStart, periodEnd])
+  @@index([geographyId])
+  @@index([officeId])
+}
+
+model RelationshipObservation {
+  id               String                  @id @default(cuid())
+  fromEntityType   InsightEntityType
+  fromEntityId     String
+  toEntityType     InsightEntityType
+  toEntityId       String
+  relationshipType InsightRelationshipType
+  periodStart      DateTime?
+  periodEnd        DateTime?
+  strength         Decimal?                @db.Decimal(12, 6)
+  confidence       Decimal?                @db.Decimal(5, 4)
+  method           String?
+  notes            String?
+  metadata         Json?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  @@index([fromEntityType, fromEntityId])
+  @@index([toEntityType, toEntityId])
+  @@index([relationshipType])
+  @@index([periodStart, periodEnd])
+}
+
+model DataSource {
+  id        String             @id @default(cuid())
+  name      String
+  category  DataSourceCategory
+  url       String?
+  agency    String?
+  notes     String?
+  metadata  Json?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  importBatches      ImportBatch[]
+  sourceAttributions SourceAttribution[]
+
+  @@unique([name, category])
+  @@index([category])
+}
+
+model ImportBatch {
+  id              String       @id @default(cuid())
+  dataSourceId    String
+  asOfDate        DateTime?
+  periodStart     DateTime?
+  periodEnd       DateTime?
+  status          ImportStatus @default(PENDING)
+  sourceUrl       String?
+  recordsImported Int?
+  errorMessage    String?
+  notes           String?
+  metadata        Json?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  dataSource         DataSource          @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
+  sourceAttributions SourceAttribution[]
+
+  @@index([dataSourceId, asOfDate])
+  @@index([status])
+}
+
+model SourceAttribution {
+  id             String           @id @default(cuid())
+  dataSourceId   String
+  importBatchId  String?
+  entityType     SourceEntityType
+  entityId       String
+  sourceRecordId String?
+  sourceUrl      String?
+  asOfDate       DateTime?
+  retrievedAt    DateTime         @default(now())
+  rawPayload     Json?
+  notes          String?
+
+  dataSource  DataSource   @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
+  importBatch ImportBatch? @relation(fields: [importBatchId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([dataSourceId])
+  @@index([importBatchId])
+  @@index([asOfDate])
+}
